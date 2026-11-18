@@ -198,11 +198,12 @@ const lockMsg=f=>'La semana del '+fmtD(monday(f))+' está cerrada. Solo el admin
 /* ===================== almacenamiento (Firebase) ===================== */
 function onErr(e){console.warn(e);if(e&&e.code==='permission-denied')toast('No tenés permiso para ver algunos datos.');}
 const snapList=s=>s.docs.map(d=>({id:d.id,...d.data()}));
-async function put(coll,id,data){await setDoc(doc(fdb,coll,id),data);return id}
-async function add(coll,data){const r=await addDoc(collection(fdb,coll),data);return r.id}
-async function del(coll,id){await deleteDoc(doc(fdb,coll,id))}
+const noPrev=()=>{if(S.preview)throw {code:'preview'}};
+async function put(coll,id,data){noPrev();await setDoc(doc(fdb,coll,id),data);return id}
+async function add(coll,data){noPrev();const r=await addDoc(collection(fdb,coll),data);return r.id}
+async function del(coll,id){noPrev();await deleteDoc(doc(fdb,coll,id))}
 async function safe(p,ok){try{await p;if(ok)toast(ok);return true}catch(e){console.warn(e);
-  toast(e&&e.code==='permission-denied'?'No tenés permiso para hacer esto.':e&&e.code==='resource-exhausted'?'Se alcanzó el límite diario gratuito. Probá mañana.':'No se pudo guardar. Revisá la conexión y probá de nuevo.');return false}}
+  toast(e&&e.code==='preview'?'Estás en vista previa: los cambios están desactivados.':e&&e.code==='permission-denied'?'No tenés permiso para hacer esto.':e&&e.code==='resource-exhausted'?'Se alcanzó el límite diario gratuito. Probá mañana.':'No se pudo guardar. Revisá la conexión y probá de nuevo.');return false}}
 
 const me=()=>S.uid||'';
 const nowIso=()=>new Date().toISOString();
@@ -313,7 +314,9 @@ function tabs(){return isAdmin()?TABS_ADMIN:S.role==='peluquero'?TABS_PEL:[]}
 function render(){
   const roleTxt={admin:'Administrador',dueno:'Dueño',peluquero:'Peluquero: '+(S.myPel||''),inactivo:'Sin acceso'}[S.role]||'';
   $('#brand').innerHTML=esc(C().negocio||'Negro Barber').replace(/^(\S+)\s+(.+)$/,'$1 <span>$2</span>');
-  $('#who').innerHTML=(roleTxt?`<span class="chip">${esc(roleTxt)}</span>`:'')+(S.email?`<button class="btn s" data-act="logout" title="${esc(S.email)}">Salir</button>`:'')+
+  const realAdmin=S.preview?S.preview.real==='admin':S.role==='admin';
+  const verComo=realAdmin?`<select id="verComo" aria-label="Ver como" style="width:auto;padding:5px 8px"><option value="">Ver como: Administrador</option><option value="dueno" ${S.preview&&S.role==='dueno'?'selected':''}>Ver como: Dueño</option>${C().peluqueros.map(p=>`<option value="pel:${esc(p.nombre)}" ${S.preview&&S.role==='peluquero'&&S.myPel===p.nombre?'selected':''}>Ver como: ${esc(p.nombre)}</option>`).join('')}</select>`:'';
+  $('#who').innerHTML=verComo+(roleTxt&&!realAdmin?`<span class="chip">${esc(roleTxt)}</span>`:'')+(S.email?`<button class="btn s" data-act="logout" title="${esc(S.email)}">Salir</button>`:'')+
     (isAdmin()&&['resumen','ventas','egresos','cuentas'].includes(S.tab)?`<input type="month" id="mesSel" value="${S.mes}" aria-label="Mes" style="width:auto;padding:5px 8px">`:'');
   const t=tabs(); if(t.length&&!t.find(x=>x[0]===S.tab))S.tab=t[0][0];
   $('#nav').innerHTML=t.map(([k,l])=>`<button data-tab="${k}" class="${k===S.tab?'on':''}">${l}</button>`).join('');
@@ -321,7 +324,7 @@ function render(){
   live(); prevVenta(); showByTipo();
 }
 function view(){
-  const pre=S.offline?`<div class="banner">No se pudo conectar con los datos todavía. Lo que ves puede estar desactualizado.</div>`:'';
+  const pre=(S.preview?`<div class="banner">Estás viendo la app como <b>${esc(S.role==='dueno'?'Dueño':'Peluquero: '+S.myPel)}</b>. Los cambios están desactivados. <button class="btn s" data-act="salirPreview">Volver a administrador</button></div>`:'')+(S.offline?`<div class="banner">No se pudo conectar con los datos todavía. Lo que ves puede estar desactualizado.</div>`:'');
   if(S.role==='login')return vLogin();
   if(S.role==='cargando')return '<div class="card"><div class="empty">Cargando…</div></div>';
   if(S.role==='inactivo')return `<div class="card"><h2>Sin acceso</h2><p>Tu usuario (${esc(S.email)}) no tiene un rol asignado o está desactivado. Pedile al administrador que te habilite.</p><div><button class="btn" data-act="logout">Salir</button></div></div>`;
@@ -751,6 +754,7 @@ document.addEventListener('click',async ev=>{
   switch(a){
     case 'logout': await signOut(auth);break;
     case 'recalcSem': live();break;
+    case 'salirPreview': if(S.preview){S.role='admin';S.myPel=S.preview.myPel;S.preview=null;S.tab=null;render()} break;
     case 'cerrarSem': {const W=S.semana,x=datosSemana(W);if(!x.ok){toast('Todavía falta completar algo para cerrar');live();break}
       if(!arm('Confirmar cierre'))break;
       const saldos={};x.rows.forEach(r=>saldos[r.k]={inicial:r.ini,sistema:Math.round(r.sis),real:num(r.realIn)});
@@ -790,6 +794,10 @@ document.addEventListener('click',async ev=>{
 document.addEventListener('input',ev=>{if(ev.target.dataset&&ev.target.dataset.wk!==undefined){S.wkVals[ev.target.dataset.wk]=ev.target.value;return}if(ev.target.closest('#fVenta'))prevVenta();if(ev.target.closest('#fEgreso'))prevEgreso()});
 document.addEventListener('change',ev=>{
   const t=ev.target;
+  if(t.id==='verComo'){const v=t.value;
+    if(!v){if(S.preview){S.role='admin';S.myPel=S.preview.myPel;S.preview=null}}
+    else{if(!S.preview)S.preview={real:'admin',myPel:S.myPel};S.role=v==='dueno'?'dueno':'peluquero';S.myPel=v.startsWith('pel:')?v.slice(4):''}
+    S.tab=null;S.editVenta=S.editEgreso=null;S.draft=null;render();window.scrollTo(0,0);return}
   if(t.dataset&&t.dataset.wk!==undefined){S.wkVals[t.dataset.wk]=t.value;live();return}
   if(t.id==='mesSel'&&t.value){S.mes=t.value;resubRange();resubSaldos();render()}
   else if(t.id==='fPel'){S.filtroPel=t.value;live()}
@@ -854,13 +862,14 @@ document.addEventListener('submit',async ev=>{
 let meUnsub=null;
 onAuthStateChanged(auth,u=>{
   if(meUnsub){meUnsub();meUnsub=null}stopAll();
-  S.cfg=null;S.cfgLoaded=false;S.role=null;S.tab=null;S.draft=null;S.usuarios=[];S.log=[];
+  S.preview=null;S.cfg=null;S.cfgLoaded=false;S.role=null;S.tab=null;S.draft=null;S.usuarios=[];S.log=[];
   if(!u){S.uid=null;S.email='';S.role='login';render();return}
   S.uid=u.uid;S.email=u.email||'';S.role='cargando';render();
   let creating=false;
   meUnsub=onSnapshot(doc(fdb,'usuarios',u.uid),async d=>{
     let m=d.exists()?d.data():null;
     if(!m&&(u.email||'').toLowerCase()===ADMIN_EMAIL){if(!creating){creating=true;try{await setDoc(doc(fdb,'usuarios',u.uid),{nombre:'Isaías',email:u.email,rol:'admin',peluquero:'',activo:true,ts:nowIso()})}catch(e){console.warn(e);toast('No se pudo crear tu usuario de administrador. Revisá las reglas de Firestore.')}}return}
+    if(S.preview)return;
     const prev=S.role+'|'+S.myPel;
     if(!m||m.activo===false)S.role='inactivo';else{S.role=m.rol;S.myPel=m.peluquero||''}
     if(S.role+'|'+S.myPel!==prev){if(S.role==='inactivo'){stopAll();render()}else startData()}
