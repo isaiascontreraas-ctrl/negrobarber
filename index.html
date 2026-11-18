@@ -165,7 +165,7 @@ const S={
   role:null, myPel:null, solicitado:false,
   cfg:null, cfgLoaded:false,
   ventas:[], egresos:[], cierres:[], abonos:[], abonoCortes:[], saldos:null, miembros:[], solicitudes:[],
-  tab:null, mes:today().slice(0,7), semana:monday(today()), cajaFecha:today(),
+  tab:null, wkVals:{}, semanas:{}, nombres:{}, mes:today().slice(0,7), semana:monday(today()), cajaFecha:today(),
   filtroPel:'', editVenta:null, editEgreso:null, draft:null, offline:false
 };
 const DEFAULT_CFG={
@@ -190,6 +190,10 @@ const pelOf=n=>C().peluqueros.find(x=>x.nombre===n);
 const medioOf=n=>C().medios.find(x=>x.medio===n);
 const cajaEf=()=>C().cuentas[0]||'Caja efectivo';
 const isAdmin=()=>S.role==='admin'||S.role==='dueno';
+const semCerrada=l=>!!(l&&S.semanas&&S.semanas[l]&&S.semanas[l].estado==='cerrada');
+const lockedV=v=>semCerrada(v.semana||monday(v.fecha));
+const lockedE=e=>semCerrada(monday(e.fecha))||semCerrada(e.semana);
+const lockMsg=f=>'La semana del '+fmtD(monday(f))+' está cerrada. Solo el administrador puede reabrirla.';
 
 /* ===================== almacenamiento (Firebase) ===================== */
 function onErr(e){console.warn(e);if(e&&e.code==='permission-denied')toast('No tenés permiso para ver algunos datos.');}
@@ -235,8 +239,11 @@ function resubRange(){
   const [a,b]=range();const k=a+b;if(k===rangeKey)return;rangeKey=k;
   stop('v');stop('e');
   U.v=onSnapshot(query(collection(fdb,'ventas'),where('fecha','>=',a),where('fecha','<=',b)),s=>{S.ventas=snapList(s);live()},onErr);
-  U.e=onSnapshot(query(collection(fdb,'egresos'),where('fecha','>=',a),where('fecha','<=',b)),s=>{S.egresos=snapList(s);live()},onErr);
+  S._e={};
+  U.e=onSnapshot(query(collection(fdb,'egresos'),where('fecha','>=',a),where('fecha','<=',b)),s=>{S._e.r=snapList(s);mergeEG()},onErr);
+  stop('es');U.es=onSnapshot(query(collection(fdb,'egresos'),where('semana','==',S.semana)),s=>{S._e.w=snapList(s);mergeEG()},onErr);
 }
+function mergeEG(){const m=new Map();for(const k of['r','w'])(S._e[k]||[]).forEach(v=>m.set(v.id,v));S.egresos=[...m.values()];live()}
 function resubSaldos(){if(!isGest())return;stop('s');U.s=onSnapshot(doc(fdb,'saldos',S.mes),d=>{S.saldos=d.exists()?d.data():null;live()},onErr)}
 function startData(){
   stopAll(['me']);rangeKey='';S.cfgLoaded=false;S.ventas=[];S.egresos=[];
@@ -246,7 +253,9 @@ function startData(){
   U.c=onSnapshot(query(collection(fdb,'cierres'),orderBy('fecha','desc'),limit(60)),s=>{S.cierres=snapList(s).reverse();live()},onErr);
   U.a=onSnapshot(collection(fdb,'abonos'),s=>{S.abonos=snapList(s);live()},onErr);
   U.ac=onSnapshot(query(collection(fdb,'ventas'),where('abonoCorte','==',true)),s=>{S.abonoCortes=snapList(s);if(S.role==='peluquero'){S._v.q3=S.abonoCortes;mergeV()}else live()},onErr);
-  if(isGest())U.us=onSnapshot(collection(fdb,'usuarios'),s=>{S.usuarios=snapList(s);if(S.tab==='config'){if(S.draft&&document.getElementById('cfNeg'))readDraft();render()}else live()},onErr);
+  U.sm=onSnapshot(collection(fdb,'semanas'),s=>{S.semanas={};snapList(s).forEach(d=>S.semanas[d.id]=d);live()},onErr);
+  if(isGest())U.nm=onSnapshot(collection(fdb,'nombres'),s=>{S.nombres={};snapList(s).forEach(d=>S.nombres[d.id]=d.nombre);live();syncNombres()},onErr);
+  if(S.role==='admin')U.us=onSnapshot(collection(fdb,'usuarios'),s=>{S.usuarios=snapList(s);syncNombres();if(S.tab==='config'){if(S.draft&&document.getElementById('cfNeg'))readDraft();render()}else live()},onErr);
 }
 function clean(d){const o=JSON.parse(JSON.stringify(d));delete o.id;
   for(const k of['peluqueros','catalogo','medios','cuentas','gastos'])if(!Array.isArray(o[k]))o[k]=[];return o}
@@ -462,7 +471,7 @@ LIVE.ventasList=()=>{
   let out='',day='',tt=0,tc=0;
   for(const v of vs){const c=calc(v);tt+=c.total;if(mine(v))tc+=c.com;
     if(v.fecha!==day){day=v.fecha;const dv=vs.filter(x=>x.fecha===day);out+=`<tr class="day"><td colspan="${pel?5:6}">${esc(dayName(day))}</td><td class="n">${money(sum(dv,x=>calc(x).total))}</td><td></td></tr>`}
-    const canEd=isAdmin()||(pel&&v.fecha===hoy&&(v.by===S.uid||v.peluquero===S.myPel));
+    const canEd=!lockedV(v)&&(isAdmin()||(pel&&v.fecha===hoy&&(v.by===S.uid||v.peluquero===S.myPel)));
     out+=`<tr><td>${esc(v.peluquero)}<br>${byCell(v)}</td><td>${esc(v.concepto)}${v.cant>1?' ×'+v.cant:''}${v.cliente?` <span class="note">· ${esc(v.cliente)}</span>`:''}${v.nota?` <span class="note">· ${esc(v.nota)}</span>`:''}</td>
       <td>${esc(v.medio)}</td>${pel?'':`<td class="n">${c.dto?'-'+money(c.dto):''}</td>`}<td class="n">${c.prop?money(c.prop):''}</td><td class="n">${mine(v)?money(c.com):''}</td><td class="n">${money(c.total)}</td>
       <td class="n">${canEd?`<button class="btn s" data-act="editVenta" data-id="${v.id}">Editar</button> <button class="btn s" data-act="delVenta" data-id="${v.id}">Borrar</button>`:''}</td></tr>`;}
@@ -508,18 +517,63 @@ LIVE.egresosList=()=>{
   return `<div class="row">${Object.entries(tot).map(([k,v])=>`<span class="chip">${esc(k)}: <b>${money(v)}</b></span>`).join('')}</div>
   <div class="tw"><table><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Cuenta</th><th>Cargó</th><th class="n">Monto</th><th></th></tr>
   ${es.map(e=>`<tr><td>${fmtD(e.fecha)}</td><td>${esc(e.tipo)}</td><td>${esc(e.concepto||e.peluquero||(e.tipo==='Movimiento entre cuentas'?'→ '+e.destino:''))}${e.nota?` <span class="note">· ${esc(e.nota)}</span>`:''}</td><td>${esc(e.cuenta)}</td><td>${byCell(e)}</td><td class="n">${money(num(e.monto))}</td>
-  <td class="n"><button class="btn s" data-act="editEgreso" data-id="${e.id}">Editar</button> <button class="btn s" data-act="delEgreso" data-id="${e.id}">Borrar</button></td></tr>`).join('')}</table></div>`;
+  <td class="n">${lockedE(e)?'<span class="by">Cerrada</span>':`<button class="btn s" data-act="editEgreso" data-id="${e.id}">Editar</button> <button class="btn s" data-act="delEgreso" data-id="${e.id}">Borrar</button>`}</td></tr>`).join('')}</table></div>`;
 };
 
 /* ---------- Liquidación ---------- */
 function weekPicker(){const s=S.semana;return `<div class="wk"><button class="btn s" data-act="semPrev" aria-label="Semana anterior">◀</button><b>${fmtD(s)} al ${fmtD(addD(s,6))}</b><button class="btn s" data-act="semNext" aria-label="Semana siguiente">▶</button>${s!==monday(today())?'<button class="btn s" data-act="semHoy">Esta semana</button>':''}</div>`}
 function vLiq(){return `<div class="card"><div class="row" style="justify-content:space-between"><h2>Sueldos de la semana</h2>${weekPicker()}</div><div data-live="liq"></div>
-<p class="note">Total ganado = comisión + propinas. Se descuentan los adelantos y lo ya pagado de esta semana. "Pagar" registra el pago desde ${esc(cajaEf())}.</p></div>`}
+<div data-live="semEstado"></div>
+<p class="note">Total ganado = comisión + propinas. Se descuentan los adelantos y lo ya pagado de esta semana. "Pagar" registra el pago desde ${esc(cajaEf())}.</p></div><div class="card"><h2>Cerrar semana</h2><div data-live="cierreSem"></div></div>`}
+LIVE.semEstado=()=>{const d=S.semanas&&S.semanas[S.semana];if(!d)return '';
+  return d.estado==='cerrada'?`<span class="chip ok">Semana cerrada por ${esc(nameOf(d.by))} el ${fmtD((d.ts||'').slice(0,10))}</span>`:d.estado==='abierta'&&d.reabiertaTs?`<span class="chip warn">Reabierta el ${fmtD(d.reabiertaTs.slice(0,10))}</span>`:''};
+function datosSemana(W){
+  const fin=addD(W,6),enSem=f=>f>=W&&f<=fin,prev=S.semanas&&S.semanas[addD(W,-7)];
+  const liq=liquidacion(W);const sueldosOk=liq.every(o=>Math.abs(o.saldo)<1);
+  const dias=[];for(let d=W;d<=fin;d=addD(d,1))dias.push(d);
+  const conVentas=dias.filter(d=>S.ventas.some(v=>v.fecha===d));
+  const faltan=conVentas.filter(d=>{const c=S.cierres.find(x=>x.fecha===d);return !(c&&c.contado!==null&&c.contado!==undefined&&c.contado!=='')});
+  const vs=S.ventas.filter(v=>enSem(v.fecha)),es=S.egresos.filter(e=>enSem(e.fecha));
+  const rows=C().cuentas.map(k=>{
+    const pr=prev&&prev.saldos&&prev.saldos[k]&&prev.saldos[k].real!=null?num(prev.saldos[k].real):null;
+    const iniIn=S.wkVals['ini_'+W+k];const ini=pr!==null?pr:num(iniIn);
+    const cob=sum(vs.filter(v=>v.cuenta===k),v=>calc(v).entra);
+    const ent=sum(es.filter(e=>e.tipo==='Movimiento entre cuentas'&&e.destino===k),e=>num(e.monto));
+    const sal=sum(es.filter(e=>e.cuenta===k),e=>num(e.monto));
+    const sis=ini+cob+ent-sal,realIn=S.wkVals['real_'+W+k]??'';
+    const dif=realIn===''?null:num(realIn)-sis;
+    return {k,pr,iniIn:iniIn??'',ini,cob,ent,sal,sis,realIn,dif}});
+  const cuentasOk=rows.every(r=>r.dif!==null&&Math.abs(r.dif)<1);
+  const terminada=today()>fin;
+  return {fin,liq,sueldosOk,conVentas,faltan,rows,cuentasOk,terminada,ok:sueldosOk&&!faltan.length&&cuentasOk&&terminada};
+}
+LIVE.cierreSem=()=>{
+  const W=S.semana,d=S.semanas&&S.semanas[W];
+  if(d&&d.estado==='cerrada'){
+    return `<p>Cerrada por <b>${esc(nameOf(d.by))}</b> el ${fmtD((d.ts||'').slice(0,10))}. Nada de esta semana se puede editar ni borrar.</p>
+    ${d.saldos?`<div class="tw"><table><tr><th>Cuenta</th><th class="n">Inicial</th><th class="n">Según sistema</th><th class="n">Real</th></tr>${Object.entries(d.saldos).map(([k,x])=>`<tr><td>${esc(k)}</td><td class="n">${money(x.inicial)}</td><td class="n">${money(x.sistema)}</td><td class="n">${money(x.real)}</td></tr>`).join('')}</table></div>`:''}
+    ${S.role==='admin'?'<div><button class="btn" data-act="reabrirSem">Reabrir semana</button></div>':'<p class="note">Si hay que corregir algo, pedile al administrador que la reabra.</p>'}`;
+  }
+  const x=datosSemana(W);
+  const chk=(ok,t,det)=>`<div class="row"><span class="chip ${ok?'ok':'bad'}">${ok?'Listo':'Falta'}</span><span>${t}</span>${det?`<span class="note">${det}</span>`:''}</div>`;
+  return `<div style="display:grid;gap:8px">
+    ${chk(x.terminada,'La semana terminó',x.terminada?'':'Se puede cerrar desde el '+fmtD(addD(x.fin,1)))}
+    ${chk(x.sueldosOk,'Sueldos pagados',x.sueldosOk?'':x.liq.filter(o=>Math.abs(o.saldo)>=1).map(o=>esc(o.nombre)+' '+money(o.saldo)).join(' · '))}
+    ${chk(!x.faltan.length,'Cierres de caja de cada día con ventas',x.faltan.length?'Faltan: '+x.faltan.map(fmtD).join(', '):'')}
+    ${chk(x.cuentasOk,'Cuentas conciliadas sin diferencia','')}</div>
+  <form id="fSem"><div class="tw"><table><tr><th>Cuenta</th><th class="n">Saldo inicial</th><th class="n">Cobros</th><th class="n">Entradas</th><th class="n">Salidas</th><th class="n">Según sistema</th><th class="n">Saldo real al ${fmtD(x.fin)}</th><th></th></tr>
+  ${x.rows.map(r=>`<tr><td><b>${esc(r.k)}</b></td><td class="n">${r.pr!==null?money(r.pr):`<input type="number" step="100" data-wk="ini_${W}${esc(r.k)}" value="${esc(r.iniIn)}" placeholder="0" style="width:110px;text-align:right" aria-label="Saldo inicial ${esc(r.k)}">`}</td>
+    <td class="n">${money(r.cob)}</td><td class="n">${money(r.ent)}</td><td class="n">${money(r.sal)}</td><td class="n"><b>${money(r.sis)}</b></td>
+    <td class="n"><input type="number" step="100" data-wk="real_${W}${esc(r.k)}" value="${esc(r.realIn)}" style="width:120px;text-align:right" aria-label="Saldo real ${esc(r.k)}"></td>
+    <td>${r.dif===null?'':Math.abs(r.dif)<1?'<span class="chip ok">OK</span>':`<span class="chip bad">Dif. ${money(r.dif)}</span>`}</td></tr>`).join('')}</table></div>
+  <p class="note">${x.rows.some(r=>r.pr===null)?'Es el primer cierre: cargá con cuánto arrancó cada cuenta el lunes. De ahí en más se toma solo del cierre anterior. ':''}Si hay diferencia, falta cargar algún cobro o gasto, o se cargó en otra cuenta.</p>
+  <div class="row"><button class="btn p" type="button" data-act="cerrarSem" ${x.ok?'':'disabled'}>Cerrar semana</button><button class="btn" type="button" data-act="recalcSem">Recalcular</button></div></form>`;
+};
 LIVE.liq=()=>{
   const l=liquidacion(S.semana);
   return `<div class="tw"><table><tr><th>Peluquero</th><th class="n">Cortes</th><th class="n">Facturó</th><th class="n">Comisión</th><th class="n">Propinas</th><th class="n">Ganó</th><th class="n">Adelantos</th><th class="n">Pagado</th><th class="n">Saldo</th><th></th></tr>
   ${l.map(o=>`<tr><td><b>${esc(o.nombre)}</b></td><td class="n">${o.cortes}</td><td class="n">${money(o.fact)}</td><td class="n">${money(o.com)}</td><td class="n">${money(o.prop)}</td><td class="n">${money(o.ganado)}</td><td class="n">${money(o.adel)}</td><td class="n">${money(o.pag)}</td>
-  <td class="n"><b class="${o.saldo<0?'neg':''}">${money(o.saldo)}</b></td><td class="n">${Math.round(o.saldo)>0?`<button class="btn s" data-act="pagar" data-pel="${esc(o.nombre)}" data-monto="${Math.round(o.saldo)}">Pagar</button>`:(o.ganado>0?'<span class="chip ok">Pagado</span>':'')}</td></tr>`).join('')}
+  <td class="n"><b class="${o.saldo<0?'neg':''}">${money(o.saldo)}</b></td><td class="n">${Math.round(o.saldo)>0&&!semCerrada(S.semana)?`<button class="btn s" data-act="pagar" data-pel="${esc(o.nombre)}" data-monto="${Math.round(o.saldo)}">Pagar</button>`:(o.ganado>0?'<span class="chip ok">Pagado</span>':'')}</td></tr>`).join('')}
   <tr class="tot"><td>Total</td><td class="n">${sum(l,o=>o.cortes)}</td><td class="n">${money(sum(l,o=>o.fact))}</td><td class="n">${money(sum(l,o=>o.com))}</td><td class="n">${money(sum(l,o=>o.prop))}</td><td class="n">${money(sum(l,o=>o.ganado))}</td><td class="n">${money(sum(l,o=>o.adel))}</td><td class="n">${money(sum(l,o=>o.pag))}</td><td class="n">${money(sum(l,o=>o.saldo))}</td><td></td></tr></table></div>`;
 };
 
@@ -559,7 +613,7 @@ LIVE.caja=()=>{
     <label for="cIni">Caja inicial (solo si es distinta)<input type="number" id="cIni" step="100" value="${esc(cie.inicial??'')}" placeholder="${Math.round(c.inicial)}"></label>
     <label for="cQuien">Cerró<select id="cQuien"><option value="">—</option>${C().peluqueros.map(p=>`<option ${p.nombre===(cie.quien||(S.role==='peluquero'?S.myPel:''))?'selected':''}>${esc(p.nombre)}</option>`).join('')}</select></label>
     <label for="cNota">Nota<input id="cNota" value="${esc(cie.nota||'')}"></label>
-    <div style="align-self:end"><button class="btn p" type="submit">Guardar cierre</button></div>
+    <div style="align-self:end">${semCerrada(monday(d))?'<span class="chip">Semana cerrada</span>':'<button class="btn p" type="submit">Guardar cierre</button>'}</div>
   </form>
   ${dif===null?'<span class="note">Contá el efectivo y cargalo para ver si cierra.</span>':Math.abs(dif)<1?'<span class="chip ok">La caja cierra bien</span>':`<span class="chip ${dif<0?'bad':'warn'}">${dif<0?'Falta':'Sobra'} ${money(Math.abs(dif))}</span>`}`;
 };
@@ -567,7 +621,7 @@ LIVE.movDia=()=>{
   const d=S.cajaFecha,es=S.egresos.filter(e=>e.fecha===d).sort((a,b)=>(a.ts||'')<(b.ts||'')?1:-1);
   const vs=S.ventas.filter(v=>v.fecha===d);
   const porMedio=C().medios.map(m=>[m.medio,sum(vs.filter(v=>v.medio===m.medio),v=>calc(v).total+calc(v).prop)]).filter(x=>x[1]);
-  const pel=S.role==='peluquero',canEd=e=>isAdmin()||(pel&&e.fecha===today()&&e.by===S.uid);
+  const pel=S.role==='peluquero',canEd=e=>!lockedE(e)&&(isAdmin()||(pel&&e.fecha===today()&&e.by===S.uid));
   return `${pel?'':`<div class="row">${porMedio.map(([m,t])=>`<span class="chip">${esc(m)}: <b>${money(t)}</b></span>`).join('')||'<span class="note">Sin ventas este día.</span>'}</div>`}
   ${es.length?`<div class="tw"><table><tr><th>Qué</th><th>Cuenta</th><th>Cargó</th><th class="n">Monto</th><th></th></tr>${es.map(e=>`<tr><td>${esc(descE(e).split(' · ')[0])}</td><td>${esc(e.cuenta)}</td><td>${byCell(e)}</td><td class="n">${money(num(e.monto))}</td><td class="n">${canEd(e)?`<button class="btn s" data-act="editEgreso" data-id="${e.id}">Editar</button> <button class="btn s" data-act="delEgreso" data-id="${e.id}">Borrar</button>`:''}</td></tr>`).join('')}</table></div>`:'<div class="note">No hubo salidas ni movimientos este día.</div>'}`;
 };
@@ -611,7 +665,7 @@ LIVE.abonos=()=>{
   ${l.map(a=>{const vence=addD(a.fechaPago,30);const us=sum(S.abonoCortes.filter(v=>norm(v.cliente)===norm(a.cliente)&&v.fecha>=a.fechaPago&&v.fecha<=vence),v=>num(v.cant)||1);
     const q=(num(a.cortes)||4)-us;const est=today()>vence?['Vencido','bad']:q<=0?['Sin cortes','warn']:['Activo','ok'];
     return `<tr><td><b>${esc(a.cliente)}</b></td><td>${esc(a.tel||'')}</td><td>${fmtD(a.fechaPago)}</td><td>${fmtD(vence)}</td><td class="n">${us}</td><td class="n">${q}</td><td><span class="chip ${est[1]}">${est[0]}</span></td>
-    <td class="n">${isAdmin()?`<button class="btn s" data-act="delAbono" data-id="${a.id}">Borrar</button>`:''}</td></tr>`}).join('')}</table></div>`;
+    <td class="n">${isAdmin()&&!semCerrada(monday(a.fechaPago))?`<button class="btn s" data-act="delAbono" data-id="${a.id}">Borrar</button>`:''}</td></tr>`}).join('')}</table></div>`;
 };
 
 /* ---------- Configuración ---------- */
@@ -680,7 +734,10 @@ function vUsuarios(){
     <td>${yo?'Administrador (vos)':`<select id="r_${esc(u.id)}" style="width:auto">${opts(sel)}</select>`}</td>
     <td class="n">${yo?'':`<button class="btn s" data-act="guardarRol" data-id="${esc(u.id)}">Guardar</button> <button class="btn s" data-act="toggleActivo" data-id="${esc(u.id)}">${u.activo===false?'Activar':'Desactivar'}</button> `}<button class="btn s" data-act="resetPass" data-mail="${esc(u.email||'')}">Mail de contraseña</button></td></tr>`}).join('')}</table></div></div>`;
 }
-function nameOf(uid){if(!uid)return '—';if(uid===S.uid)return 'Vos';const u=(S.usuarios||[]).find(x=>x.id===uid);return u?(u.nombre||u.email):(isGest()?'Usuario borrado':'Otro usuario')}
+function nameOf(uid){if(!uid)return '—';if(uid===S.uid)return 'Vos';const u=(S.usuarios||[]).find(x=>x.id===uid);if(u)return u.nombre||u.email;const n=S.nombres&&S.nombres[uid];return n||(isGest()?'Usuario':'Otro usuario')}
+let syncing=false;
+async function syncNombres(){if(S.role!=='admin'||syncing||!S.nombres||!S.usuarios||!S.usuarios.length)return;syncing=true;
+  try{for(const u of S.usuarios){const n=u.nombre||u.email||'';if(n&&S.nombres[u.id]!==n)await setDoc(doc(fdb,'nombres',u.id),{nombre:n})}}catch(e){console.warn(e)}syncing=false}
 function fillNames(){document.querySelectorAll('[data-uid]').forEach(e=>e.textContent=nameOf(e.dataset.uid))}
 
 /* ===================== eventos ===================== */
@@ -693,6 +750,14 @@ document.addEventListener('click',async ev=>{
   const arm=(txt)=>{if(b.dataset.armed){return true}b.dataset.armed='1';b.dataset.old=b.textContent;b.textContent=txt;b.classList.add('armed');setTimeout(()=>{if(b.isConnected){delete b.dataset.armed;b.textContent=b.dataset.old;b.classList.remove('armed')}},4000);return false};
   switch(a){
     case 'logout': await signOut(auth);break;
+    case 'recalcSem': live();break;
+    case 'cerrarSem': {const W=S.semana,x=datosSemana(W);if(!x.ok){toast('Todavía falta completar algo para cerrar');live();break}
+      if(!arm('Confirmar cierre'))break;
+      const saldos={};x.rows.forEach(r=>saldos[r.k]={inicial:r.ini,sistema:Math.round(r.sis),real:num(r.realIn)});
+      const r=resumen();const d={lunes:W,estado:'cerrada',by:me(),ts:nowIso(),saldos,sueldos:sum(x.liq,o=>o.ganado)};
+      if(await safe(put('semanas',W,d),'Semana cerrada'))logA('Cerró semana','semanas',W,'Semana del '+fmtD(W))} break;
+    case 'reabrirSem': {if(S.role!=='admin')break;if(!arm('¿Reabrir?'))break;const W=S.semana,o=S.semanas[W];const d={...o,estado:'abierta',reabiertaBy:me(),reabiertaTs:nowIso()};delete d.id;
+      if(await safe(put('semanas',W,d),'Semana reabierta'))logA('Reabrió semana','semanas',W,'Semana del '+fmtD(W))} break;
     case 'olvide': {const m=$('#lMail').value.trim();if(!m){$('#lMsg').textContent='Escribí tu mail arriba y tocá de nuevo.';break}
       try{await sendPasswordResetEmail(auth,m);$('#lMsg').textContent='Te mandamos un mail para cambiar la contraseña. Revisá también spam.'}catch(e){$('#lMsg').textContent='No se pudo mandar el mail. Revisá que esté bien escrito.'}} break;
     case 'resetPass': if(arm('¿Mandar mail?')){try{await sendPasswordResetEmail(auth,b.dataset.mail);toast('Mail enviado a '+b.dataset.mail)}catch(e){toast('No se pudo mandar el mail')}} break;
@@ -704,10 +769,10 @@ document.addEventListener('click',async ev=>{
     case 'cfgDefault': if(await safe(put('config','main',DEFAULT_CFG),'Configuración creada'))logA('Creó configuración','config','main',''); break;
     case 'editVenta': S.editVenta=b.dataset.id;render();window.scrollTo(0,0);prevVenta();break;
     case 'cancelVenta': S.editVenta=null;render();break;
-    case 'delVenta': if(arm('¿Borrar?')){const o=S.ventas.find(x=>x.id===b.dataset.id);if(await safe(del('ventas',b.dataset.id),'Venta borrada')&&o)logA('Borró venta','ventas',o.id,descV(o)+' ('+fmtD(o.fecha)+')')}break;
+    case 'delVenta': if(arm('¿Borrar?')){const o=S.ventas.find(x=>x.id===b.dataset.id);if(o&&lockedV(o)){toast(lockMsg(o.fecha));break}if(await safe(del('ventas',b.dataset.id),'Venta borrada')&&o)logA('Borró venta','ventas',o.id,descV(o)+' ('+fmtD(o.fecha)+')')}break;
     case 'editEgreso': S.editEgreso=b.dataset.id;render();window.scrollTo(0,0);showByTipo();break;
     case 'cancelEgreso': S.editEgreso=null;render();showByTipo();break;
-    case 'delEgreso': if(arm('¿Borrar?')){const o=S.egresos.find(x=>x.id===b.dataset.id);if(await safe(del('egresos',b.dataset.id),'Movimiento borrado')&&o)logA('Borró movimiento','egresos',o.id,descE(o)+' ('+fmtD(o.fecha)+')')}break;
+    case 'delEgreso': if(arm('¿Borrar?')){const o=S.egresos.find(x=>x.id===b.dataset.id);if(o&&lockedE(o)){toast(lockMsg(o.fecha));break}if(await safe(del('egresos',b.dataset.id),'Movimiento borrado')&&o)logA('Borró movimiento','egresos',o.id,descE(o)+' ('+fmtD(o.fecha)+')')}break;
     case 'delAbono': if(arm('¿Borrar?')){const o=S.abonos.find(x=>x.id===b.dataset.id);if(await safe(del('abonos',b.dataset.id),'Abono borrado')&&o)logA('Borró abono','abonos',o.id,o.cliente)}break;
     case 'semPrev': S.semana=addD(S.semana,-7);resubRange();render();break;
     case 'semNext': S.semana=addD(S.semana,7);resubRange();render();break;
@@ -722,9 +787,10 @@ document.addEventListener('click',async ev=>{
       if(await safe(put('config','main',JSON.parse(JSON.stringify(d))),'Configuración guardada')){logA('Cambió configuración','config','main','');S.draft=null;render()}} break;
   }
 });
-document.addEventListener('input',ev=>{if(ev.target.closest('#fVenta'))prevVenta();if(ev.target.closest('#fEgreso'))prevEgreso()});
+document.addEventListener('input',ev=>{if(ev.target.dataset&&ev.target.dataset.wk!==undefined){S.wkVals[ev.target.dataset.wk]=ev.target.value;return}if(ev.target.closest('#fVenta'))prevVenta();if(ev.target.closest('#fEgreso'))prevEgreso()});
 document.addEventListener('change',ev=>{
   const t=ev.target;
+  if(t.dataset&&t.dataset.wk!==undefined){S.wkVals[t.dataset.wk]=t.value;live();return}
   if(t.id==='mesSel'&&t.value){S.mes=t.value;resubRange();resubSaldos();render()}
   else if(t.id==='fPel'){S.filtroPel=t.value;live()}
   else if(t.id==='cFecha'&&t.value){S.cajaFecha=t.value;resubRange();live()}
@@ -740,12 +806,13 @@ document.addEventListener('submit',async ev=>{
     const sec=initializeApp(firebaseConfig,'alta'+Date.now());const sa=getAuth(sec);
     try{const cr=await createUserWithEmailAndPassword(sa,mail,pass);const uid=cr.user.uid;await signOut(sa);
       const d={nombre:nom,email:mail,rol:v.startsWith('pel:')?'peluquero':v,peluquero:v.startsWith('pel:')?v.slice(4):'',activo:true,by:me(),ts:nowIso()};
-      if(await safe(put('usuarios',uid,d),'Usuario creado. Pasale el mail y la contraseña a '+nom)){logA('Creó usuario','usuarios',uid,nom+' · '+mail+' · '+(d.peluquero?'peluquero '+d.peluquero:d.rol));f.reset()}
+      if(await safe(put('usuarios',uid,d),'Usuario creado. Pasale el mail y la contraseña a '+nom)){setDoc(doc(fdb,'nombres',uid),{nombre:nom}).catch(()=>{});logA('Creó usuario','usuarios',uid,nom+' · '+mail+' · '+(d.peluquero?'peluquero '+d.peluquero:d.rol));f.reset()}
     }catch(e){toast(e.code==='auth/email-already-in-use'?'Ese mail ya tiene usuario.':e.code==='auth/invalid-email'?'El mail no es válido.':e.code==='auth/weak-password'?'Contraseña muy débil.':'No se pudo crear el usuario.')}
     return}
   if(f.id==='fVenta'){const v=readVenta();
     if(!v.fecha||!v.peluquero||!v.concepto||!v.medio){toast('Completá peluquero, servicio y medio de pago');return}
     const doc=snap(v),old=S.editVenta?S.ventas.find(x=>x.id===S.editVenta):null;
+    if(semCerrada(monday(v.fecha))||(old&&lockedV(old))){toast(lockMsg(old?old.fecha:v.fecha));return}
     if(old){doc.by=old.by||'';doc.ts=old.ts||'';doc.editBy=me();doc.editTs=nowIso()}else{doc.by=me();doc.ts=nowIso()}
     $('#vBtn').disabled=true;
     if(old){if(await safe(put('ventas',old.id,doc),'Venta actualizada')){logA('Editó venta','ventas',old.id,descV(doc));S.editVenta=null;render()}else prevVenta()}
@@ -757,13 +824,14 @@ document.addEventListener('submit',async ev=>{
     const doc={fecha,tipo,monto,cuenta:$('#eCuenta').value,concepto:tipo==='Gasto'?$('#eConcepto').value:'',
       peluquero:['Adelanto','Pago peluquero'].includes(tipo)?$('#ePel').value:'',destino:tipo==='Movimiento entre cuentas'?$('#eDest').value:'',
       semanaRef:['Adelanto','Pago peluquero'].includes(tipo)?$('#eSem').value:'',nota:$('#eNota').value.trim()};
-    doc.semana=monday(doc.semanaRef||fecha);
+    doc.semana=monday(doc.semanaRef||fecha);doc.semanaFecha=monday(fecha);
     if(!fecha||!monto){toast('Completá fecha y monto');return}
     if(!tiposE().includes(tipo)){toast('No tenés permiso para cargar ese tipo de movimiento');return}
     if(tipo==='Gasto'&&!doc.concepto){toast('Elegí el concepto del gasto');return}
     if(['Adelanto','Pago peluquero'].includes(tipo)&&!doc.peluquero){toast('Elegí el peluquero');return}
     if(tipo==='Movimiento entre cuentas'&&doc.destino===doc.cuenta){toast('La cuenta de destino tiene que ser otra');return}
     const old=S.editEgreso?S.egresos.find(x=>x.id===S.editEgreso):null;
+    if(lockedE(doc)||(old&&lockedE(old))){toast(lockMsg(fecha));return}
     if(old){doc.by=old.by||'';doc.ts=old.ts||'';doc.editBy=me();doc.editTs=nowIso()}else{doc.by=me();doc.ts=nowIso()}
     $('#eBtn').disabled=true;S.egDefault={tipo};
     if(old){if(await safe(put('egresos',old.id,doc),'Movimiento actualizado')){logA('Editó movimiento','egresos',old.id,descE(doc));S.editEgreso=null;render()}else prevEgreso()}
@@ -771,13 +839,15 @@ document.addEventListener('submit',async ev=>{
       toast('Guardado: '+tipo+' '+money(monto),'Deshacer',async()=>{if(await safe(del('egresos',id),'Movimiento deshecho'))logA('Deshizo movimiento','egresos',id,descE(doc))});
     }else prevEgreso()}}
   else if(f.id==='fCaja'){const d=S.cajaFecha,ini=$('#cIni').value;
-    const doc={fecha:d,contado:num($('#cCont').value),inicial:ini===''?null:num(ini),quien:$('#cQuien').value,nota:$('#cNota').value.trim(),by:me(),ts:nowIso()};
+    if(semCerrada(monday(d))){toast(lockMsg(d));return}
+    const doc={semana:monday(d),fecha:d,contado:num($('#cCont').value),inicial:ini===''?null:num(ini),quien:$('#cQuien').value,nota:$('#cNota').value.trim(),by:me(),ts:nowIso()};
     if(await safe(put('cierres',d,doc),'Cierre guardado'))logA('Cerró caja','cierres',d,fmtD(d)+' · contado '+money(doc.contado))}
   else if(f.id==='fCuentas'){const ini={},real={};C().cuentas.forEach((k,i)=>{const a=$('#ci'+i).value,b=$('#cr'+i).value;if(a!=='')ini[k]=num(a);if(b!=='')real[k]=num(b)});
     if(await safe(put('saldos',S.mes,{mes:S.mes,inicial:ini,real,by:me(),ts:nowIso()}),'Saldos guardados'))logA('Cargó saldos','saldos',S.mes,mesLabel(S.mes))}
   else if(f.id==='fAbono'){const doc={cliente:$('#aCli').value.trim(),tel:$('#aTel').value.trim(),fechaPago:$('#aFecha').value,cortes:num($('#aCortes').value)||4};
     if(!doc.cliente){toast('Poné el nombre del cliente');return}
-    doc.by=me();doc.ts=nowIso();let id;if(await safe(add('abonos',doc).then(x=>id=x),'Abono agregado')){logA('Agregó abono','abonos',id,doc.cliente);f.reset()}}
+    if(semCerrada(monday(doc.fechaPago))){toast(lockMsg(doc.fechaPago));return}
+    doc.semana=monday(doc.fechaPago);doc.by=me();doc.ts=nowIso();let id;if(await safe(add('abonos',doc).then(x=>id=x),'Abono agregado')){logA('Agregó abono','abonos',id,doc.cliente);f.reset()}}
 });
 
 /* ===================== arranque ===================== */
