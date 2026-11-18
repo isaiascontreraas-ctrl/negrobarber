@@ -218,8 +218,16 @@ function stop(k){if(U[k]){U[k]();delete U[k]}}
 function stopAll(keep){Object.keys(U).forEach(k=>{if(!keep||!keep.includes(k))stop(k)})}
 const isGest=()=>S.role==='admin'||S.role==='dueno';
 let rangeKey='';
+function ultimoCierre(){return Object.values(S.semanas||{}).filter(d=>d.estado==='cerrada'&&d.saldos).sort((x,y)=>(x.lunes||x.id)<(y.lunes||y.id)?1:-1)[0]||null}
+function saldosActuales(){
+  const lc=ultimoCierre();if(!lc)return null;const desde=addD(lc.lunes||lc.id,7),hoy=today();
+  const vs=S.ventas.filter(v=>v.fecha>=desde&&v.fecha<=hoy),es=S.egresos.filter(e=>e.fecha>=desde&&e.fecha<=hoy);
+  return {desde,lc,rows:C().cuentas.map(k=>{const base=num(lc.saldos[k]&&lc.saldos[k].real);
+    const t=base+sum(vs.filter(v=>v.cuenta===k),v=>calc(v).entra)+sum(es.filter(e=>e.tipo==='Movimiento entre cuentas'&&e.destino===k),e=>num(e.monto))-sum(es.filter(e=>e.cuenta===k),e=>num(e.monto));
+    return [k,t]})};
+}
 function range(){
-  const a=[mStart(S.mes),S.semana,S.cajaFecha].sort()[0];
+  const lc=ultimoCierre();const a=[mStart(S.mes),S.semana,S.cajaFecha].concat(lc?[addD(lc.lunes||lc.id,7)]:[]).sort()[0];
   const b=[mEnd(S.mes),addD(S.semana,6),S.cajaFecha].sort().pop();
   return [a,b];
 }
@@ -254,7 +262,7 @@ function startData(){
   U.c=onSnapshot(query(collection(fdb,'cierres'),orderBy('fecha','desc'),limit(60)),s=>{S.cierres=snapList(s).reverse();live()},onErr);
   U.a=onSnapshot(collection(fdb,'abonos'),s=>{S.abonos=snapList(s);live()},onErr);
   U.ac=onSnapshot(query(collection(fdb,'ventas'),where('abonoCorte','==',true)),s=>{S.abonoCortes=snapList(s);if(S.role==='peluquero'){S._v.q3=S.abonoCortes;mergeV()}else live()},onErr);
-  U.sm=onSnapshot(collection(fdb,'semanas'),s=>{S.semanas={};snapList(s).forEach(d=>S.semanas[d.id]=d);live()},onErr);
+  U.sm=onSnapshot(collection(fdb,'semanas'),s=>{S.semanas={};snapList(s).forEach(d=>S.semanas[d.id]=d);if(isGest())resubRange();live()},onErr);
   if(isGest())U.nm=onSnapshot(collection(fdb,'nombres'),s=>{S.nombres={};snapList(s).forEach(d=>S.nombres[d.id]=d.nombre);live();syncNombres()},onErr);
   if(S.role==='admin')U.us=onSnapshot(collection(fdb,'usuarios'),s=>{S.usuarios=snapList(s);syncNombres();if(S.tab==='config'){if(S.draft&&document.getElementById('cfNeg'))readDraft();render()}else live()},onErr);
 }
@@ -356,27 +364,43 @@ function kpi(l,v,s,hi,cls){return `<div class="kpi${hi?' hi':''}"><div class="l"
 /* ---------- Resumen ---------- */
 function vResumen(){return `<div data-live="resumen" style="display:grid;gap:16px"></div>`}
 LIVE.resumen=()=>{
-  const r=resumen(),cfg=C();
+  const r=resumen(),cfg=C(),adm=S.role==='admin';
   const dias=[];for(let d=mStart(S.mes);d<=mEnd(S.mes);d=addD(d,1))dias.push(d);
-  const porDia=dias.map(d=>sum(r.vs.filter(x=>x.v.fecha===d),x=>x.c.total));const mx=Math.max(1,...porDia);
-  const bars=(rows,max)=>rows.length?`<div class="bars">${rows.map(([l,v,g])=>`<div class="bar"><span>${esc(l)}</span><span class="t"><i class="${g?'g':''}" style="width:${max?Math.max(0,v/max*100):0}%"></i></span><span class="n">${money(v)}</span></div>`).join('')}</div>`:'<div class="empty">Sin datos este mes</div>';
+  const porDiaN=dias.map(d=>sum(r.vs.filter(x=>x.v.fecha===d),x=>x.c.cortes));
+  const porDiaP=dias.map(d=>sum(r.vs.filter(x=>x.v.fecha===d),x=>x.c.total));
+  const cols=(vals,fmt,lbl)=>{const mx=Math.max(1,...vals);return `<div class="row" style="justify-content:space-between"><h2>${lbl} · ${esc(mesLabel(S.mes))}</h2><span class="note">máx. ${fmt(mx)}</span></div>
+    <div class="cols" role="img" aria-label="${lbl}">${vals.map((v,i)=>`<div class="${v?'':'z'}" style="height:${v/mx*100}%" title="${fmtD(dias[i])}: ${fmt(v)}"></div>`).join('')}</div>
+    <div class="axis"><span>1</span><span>${Math.ceil(dias.length/2)}</span><span>${dias.length}</span></div>`};
+  const bars=(rows,max,f=money)=>rows.length?`<div class="bars">${rows.map(([l,v])=>`<div class="bar"><span>${esc(l)}</span><span class="t"><i style="width:${max?Math.max(0,v/max*100):0}%"></i></span><span class="n">${f(v)}</span></div>`).join('')}</div>`:'<div class="empty">Sin datos este mes</div>';
   const pel=cfg.peluqueros.map(p=>{const m=r.vs.filter(x=>x.v.peluquero===p.nombre);return[p.nombre,sum(m,x=>x.c.total),sum(m,x=>x.c.cortes),sum(m,x=>x.c.com)]});
   const med=cfg.medios.map(m=>[m.medio,sum(r.vs.filter(x=>x.v.medio===m.medio),x=>x.c.total)]).filter(x=>x[1]);
   const con=cfg.catalogo.map(c=>{const m=r.vs.filter(x=>x.v.concepto===c.concepto);return[c.concepto,sum(m,x=>x.c.total),sum(m,x=>x.c.cant)]}).filter(x=>x[2]).sort((a,b)=>b[1]-a[1]);
-  const gas=cfg.gastos.map(g=>[g.concepto,num(g.presupuesto),sum(r.es.filter(e=>e.tipo==='Gasto'&&e.concepto===g.concepto),e=>num(e.monto))]);
-  const otros=sum(r.es.filter(e=>e.tipo==='Gasto'&&!cfg.gastos.find(g=>g.concepto===e.concepto)),e=>num(e.monto));
-  if(otros)gas.push(['Sin concepto',0,otros]);
+  const gConc=[...new Set(r.es.filter(e=>e.tipo==='Gasto').map(e=>e.concepto||'Sin concepto'))].map(k=>[k,sum(r.es.filter(e=>e.tipo==='Gasto'&&(e.concepto||'Sin concepto')===k),e=>num(e.monto))]).sort((a,b)=>b[1]-a[1]);
+  const sa=saldosActuales();
+  const saldosHtml=sa?`<div class="kpis">${sa.rows.map(([k,t])=>kpi(esc(k),money(t),'',false,t<0?'neg':'')).join('')}${kpi('Total en cuentas',money(sum(sa.rows,x=>x[1])),'',true)}</div>
+    <p class="note">Calculado desde el cierre de la semana del ${fmtD(sa.lc.lunes||sa.lc.id)} más los movimientos cargados después.</p>`
+    :'<div class="empty">Los saldos aparecen después del primer <b>Cerrar semana</b> (en Sueldos), que es cuando se cargan los saldos reales de cada cuenta.</div>';
   return `
   <div class="kpis">
-    ${kpi('Ventas del mes',money(r.total),`${r.cortes} cortes · ticket ${money(r.ticket)}`)}
-    ${kpi('Costos y gastos',money(r.costos),`Gastos del local ${money(r.gastos)}`)}
-    ${kpi('Ganancia del negocio',money(r.gan),`Margen ${pctf(r.margen)}`,true,r.gan<0?'neg':'')}
-    ${kpi('Gana el dueño',money(r.dueno),`Sus cortes ${money(r.comDueno)} · retiró ${money(r.retiros)}`)}
+    ${kpi('Ventas del mes',money(r.total),`Servicios ${money(r.serv)} · productos ${money(r.prod)}${r.abono?' · abonos '+money(r.abono):''}`,true)}
+    ${kpi('Cortes del mes',r.cortes,`Ticket promedio ${money(r.ticket)}`)}
+    ${kpi('Gastos del mes',money(r.gastos),'Lo cargado en Gastos')}
+    ${adm?kpi('Ganancia del negocio',money(r.gan),`Margen ${pctf(r.margen)}`,false,r.gan<0?'neg':''):''}
   </div>
-  <div class="card"><div class="row" style="justify-content:space-between"><h2>Ventas por día · ${esc(mesLabel(S.mes))}</h2><span class="note">máx. ${money(mx)}</span></div>
-    <div class="cols" role="img" aria-label="Ventas por día del mes">${porDia.map((v,i)=>`<div class="${v?'':'z'}" style="height:${v/mx*100}%" title="${fmtD(dias[i])}: ${money(v)}"></div>`).join('')}</div>
-    <div class="axis"><span>1</span><span>${Math.ceil(dias.length/2)}</span><span>${dias.length}</span></div></div>
+  <div class="card"><h2>Saldo en las cuentas</h2>${saldosHtml}</div>
   <div class="grid2">
+    <div class="card">${cols(porDiaN,n=>n+' cortes','Cortes por día')}</div>
+    <div class="card">${cols(porDiaP,money,'Ventas por día en $')}</div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h2>Por peluquero</h2><div class="tw"><table><tr><th>Peluquero</th><th class="n">Cortes</th><th class="n">Facturó</th><th class="n">Comisión</th></tr>
+      ${pel.map(p=>`<tr><td>${esc(p[0])}</td><td class="n">${p[2]}</td><td class="n">${money(p[1])}</td><td class="n">${money(p[3])}</td></tr>`).join('')}
+      <tr class="tot"><td>Total</td><td class="n">${sum(pel,p=>p[2])}</td><td class="n">${money(sum(pel,p=>p[1]))}</td><td class="n">${money(sum(pel,p=>p[3]))}</td></tr></table></div></div>
+    <div class="card"><h2>Por medio de cobro</h2>${bars(med,Math.max(1,...med.map(x=>x[1])))}
+      <h3>Más vendido</h3>${bars(con.map(c=>[c[0]+' ×'+c[2],c[1]]),Math.max(1,...con.map(x=>x[1])))}</div>
+  </div>
+  <div class="card"><h2>Gastos del mes</h2>${gConc.length?`<div class="tw"><table><tr><th>Concepto</th><th class="n">Pagado</th></tr>${gConc.map(g=>`<tr><td>${esc(g[0])}</td><td class="n">${money(g[1])}</td></tr>`).join('')}<tr class="tot"><td>Total</td><td class="n">${money(r.gastos)}</td></tr></table></div>`:'<div class="empty">No hay gastos cargados este mes.</div>'}</div>
+  ${adm?`<div class="grid2">
     <div class="card"><h2>Estado de resultados</h2><div class="tw"><table>
       <tr><td>Servicios</td><td class="n">${money(r.serv)}</td></tr>
       <tr><td>Abonos</td><td class="n">${money(r.abono)}</td></tr>
@@ -387,27 +411,16 @@ LIVE.resumen=()=>{
       <tr><td>Costo de productos</td><td class="n">-${money(r.costo)}</td></tr>
       <tr><td>Gastos del local</td><td class="n">-${money(r.gastos)}</td></tr>
       <tr class="tot"><td>Ganancia del negocio</td><td class="n ${r.gan<0?'neg':'pos'}">${money(r.gan)}</td></tr>
-      <tr><td>Ganancia si se pagan todos los gastos presupuestados</td><td class="n">${money(r.ganPresu)}</td></tr>
       <tr><td>Descuentos dados</td><td class="n">${money(r.dto)}</td></tr>
       <tr><td>Ventas facturadas</td><td class="n">${pctf(r.fact)}</td></tr>
-    </table></div></div>
+    </table></div><p class="note">Solo lo ves vos.</p></div>
     <div class="card"><h2>El dueño (${esc(cfg.dueno)})</h2><div class="tw"><table>
       <tr><td>Comisión por sus cortes</td><td class="n">${money(r.comDueno)}</td></tr>
       <tr><td>Ganancia del negocio</td><td class="n">${money(r.gan)}</td></tr>
       <tr class="tot"><td>Total que gana</td><td class="n">${money(r.dueno)}</td></tr>
       <tr><td>Retiros del mes</td><td class="n">-${money(r.retiros)}</td></tr>
       <tr class="tot"><td>Le queda por retirar</td><td class="n ${r.dueno-r.retiros<0?'neg':''}">${money(r.dueno-r.retiros)}</td></tr>
-    </table></div>
-    <h3>Por medio de cobro</h3>${bars(med,Math.max(1,...med.map(x=>x[1])))}</div>
-  </div>
-  <div class="grid2">
-    <div class="card"><h2>Por peluquero</h2><div class="tw"><table><tr><th>Peluquero</th><th class="n">Cortes</th><th class="n">Facturó</th><th class="n">Comisión</th></tr>
-      ${pel.map(p=>`<tr><td>${esc(p[0])}</td><td class="n">${p[2]}</td><td class="n">${money(p[1])}</td><td class="n">${money(p[3])}</td></tr>`).join('')}</table></div>
-      <h3>Más vendido</h3>${bars(con.map(c=>[c[0]+' ×'+c[2],c[1]]),Math.max(1,...con.map(x=>x[1])))}</div>
-    <div class="card"><h2>Gastos: presupuesto vs real</h2><div class="tw"><table><tr><th>Concepto</th><th class="n">Presupuesto</th><th class="n">Real</th><th></th></tr>
-      ${gas.map(g=>`<tr><td>${esc(g[0])}</td><td class="n">${money(g[1])}</td><td class="n">${money(g[2])}</td><td>${g[2]>g[1]?'<span class="chip bad">Excedido</span>':g[2]===0&&g[1]>0?'<span class="chip warn">Sin pagar</span>':g[1]>0?'<span class="chip ok">OK</span>':''}</td></tr>`).join('')}
-      <tr class="tot"><td>Total</td><td class="n">${money(r.presu)}</td><td class="n">${money(r.gastos)}</td><td></td></tr></table></div></div>
-  </div>`;
+    </table></div><p class="note">Solo lo ves vos.</p></div></div>`:''}`;
 };
 
 /* ---------- Ventas ---------- */
@@ -698,8 +711,8 @@ function vConfig(){
   <div class="grid2">
   <div class="card"><h2>Cuentas</h2><div class="tw cfgt"><table>${d.cuentas.map((c,i)=>`<tr><td>${inp('aN'+i,c)}</td><td>${rm('cuentas',i)}</td></tr>`).join('')}</table></div>
     <div><button type="button" class="btn s" data-act="addRow" data-k="cuentas">+ Agregar cuenta</button></div><p class="note">La primera cuenta es la caja de efectivo.</p></div>
-  <div class="card"><h2>Gastos mensuales (presupuesto)</h2><div class="tw cfgt"><table><tr><th>Concepto</th><th>Presupuesto $</th><th></th></tr>
-    ${d.gastos.map((g,i)=>`<tr><td>${inp('gN'+i,g.concepto)}</td><td>${inp('gP'+i,g.presupuesto,'number','width:120px')}</td><td>${rm('gastos',i)}</td></tr>`).join('')}</table></div>
+  <div class="card"><h2>Conceptos de gastos</h2><div class="tw cfgt"><table><tr><th>Concepto</th><th></th></tr>
+    ${d.gastos.map((g,i)=>`<tr><td>${inp('gN'+i,g.concepto)}</td><td>${rm('gastos',i)}</td></tr>`).join('')}</table></div>
     <div><button type="button" class="btn s" data-act="addRow" data-k="gastos">+ Agregar gasto</button></div></div>
   </div>
   <div class="card"><div class="row"><button class="btn p" data-act="saveCfg">Guardar configuración</button><button class="btn" data-act="resetDraft">Descartar cambios</button></div></div>
@@ -716,7 +729,7 @@ function readDraft(){
   d.medios=d.medios.map((m,i)=>({medio:g('mN'+i).trim(),pct:num(g('mP'+i))/100,cuenta:g('mC'+i)}));
   d.catalogo=d.catalogo.map((c,i)=>({concepto:g('kN'+i).trim(),tipo:g('kT'+i),precio:num(g('kP'+i)),base:g('kB'+i)===''?null:num(g('kB'+i)),costo:num(g('kC'+i)),comisiona:document.getElementById('kM'+i).checked}));
   d.cuentas=d.cuentas.map((c,i)=>g('aN'+i).trim());
-  d.gastos=d.gastos.map((x,i)=>({concepto:g('gN'+i).trim(),presupuesto:num(g('gP'+i))}));
+  d.gastos=d.gastos.map((x,i)=>({concepto:g('gN'+i).trim()}));
   d.dueno=g('cfDue');d.abonoCorte=g('cfAb');
 }
 function vUsuarios(){
@@ -782,7 +795,7 @@ document.addEventListener('click',async ev=>{
     case 'semNext': S.semana=addD(S.semana,7);resubRange();render();break;
     case 'semHoy': S.semana=monday(today());resubRange();render();break;
     case 'pagar': if(arm('Confirmar '+money(+b.dataset.monto))){const d={fecha:today(),tipo:'Pago peluquero',concepto:'',peluquero:b.dataset.pel,monto:+b.dataset.monto,cuenta:cajaEf(),destino:'',semana:S.semana,semanaRef:S.semana,nota:'Sueldo semana '+fmtD(S.semana),by:me(),ts:nowIso()};let id;if(await safe(add('egresos',d).then(x=>id=x),'Pago registrado'))logA('Registró pago','egresos',id,descE(d))}break;
-    case 'addRow': readDraft();{const k=b.dataset.k,blank={peluqueros:{nombre:'',pct:.5},medios:{medio:'',pct:0,cuenta:S.draft.cuentas[0]||''},catalogo:{concepto:'',tipo:'Servicio',precio:0,base:null,costo:0,comisiona:true},cuentas:'',gastos:{concepto:'',presupuesto:0}}[k];S.draft[k].push(blank)}render();break;
+    case 'addRow': readDraft();{const k=b.dataset.k,blank={peluqueros:{nombre:'',pct:.5},medios:{medio:'',pct:0,cuenta:S.draft.cuentas[0]||''},catalogo:{concepto:'',tipo:'Servicio',precio:0,base:null,costo:0,comisiona:true},cuentas:'',gastos:{concepto:''}}[k];S.draft[k].push(blank)}render();break;
     case 'rmRow': readDraft();S.draft[b.dataset.k].splice(+b.dataset.i,1);render();break;
     case 'resetDraft': S.draft=null;render();break;
     case 'saveCfg': {readDraft();const d=S.draft;
