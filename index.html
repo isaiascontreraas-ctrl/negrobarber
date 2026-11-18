@@ -544,8 +544,8 @@ function datosSemana(W){
     const dif=realIn===''?null:num(realIn)-sis;
     return {k,pr,iniIn:iniIn??'',ini,cob,ent,sal,sis,realIn,dif}});
   const cuentasOk=rows.every(r=>r.dif!==null&&Math.abs(r.dif)<1);
-  const terminada=today()>fin;
-  return {fin,liq,sueldosOk,conVentas,faltan,rows,cuentasOk,terminada,ok:sueldosOk&&!faltan.length&&cuentasOk&&terminada};
+  const sab=addD(W,5),terminada=today()>=sab;
+  return {fin,sab,liq,sueldosOk,conVentas,faltan,rows,cuentasOk,terminada,ok:sueldosOk&&!faltan.length&&cuentasOk&&terminada};
 }
 LIVE.cierreSem=()=>{
   const W=S.semana,d=S.semanas&&S.semanas[W];
@@ -557,11 +557,11 @@ LIVE.cierreSem=()=>{
   const x=datosSemana(W);
   const chk=(ok,t,det)=>`<div class="row"><span class="chip ${ok?'ok':'bad'}">${ok?'Listo':'Falta'}</span><span>${t}</span>${det?`<span class="note">${det}</span>`:''}</div>`;
   return `<div style="display:grid;gap:8px">
-    ${chk(x.terminada,'La semana terminó',x.terminada?'':'Se puede cerrar desde el '+fmtD(addD(x.fin,1)))}
+    ${chk(x.terminada,'Llegó el sábado',x.terminada?'':'Se puede cerrar desde el sábado '+fmtD(x.sab))}
     ${chk(x.sueldosOk,'Sueldos pagados',x.sueldosOk?'':x.liq.filter(o=>Math.abs(o.saldo)>=1).map(o=>esc(o.nombre)+' '+money(o.saldo)).join(' · '))}
     ${chk(!x.faltan.length,'Cierres de caja de cada día con ventas',x.faltan.length?'Faltan: '+x.faltan.map(fmtD).join(', '):'')}
     ${chk(x.cuentasOk,'Cuentas conciliadas sin diferencia','')}</div>
-  <form id="fSem"><div class="tw"><table><tr><th>Cuenta</th><th class="n">Saldo inicial</th><th class="n">Cobros</th><th class="n">Entradas</th><th class="n">Salidas</th><th class="n">Según sistema</th><th class="n">Saldo real al ${fmtD(x.fin)}</th><th></th></tr>
+  <form id="fSem"><div class="tw"><table><tr><th>Cuenta</th><th class="n">Saldo inicial</th><th class="n">Cobros</th><th class="n">Entradas</th><th class="n">Salidas</th><th class="n">Según sistema</th><th class="n">Saldo real hoy</th><th></th></tr>
   ${x.rows.map(r=>`<tr><td><b>${esc(r.k)}</b></td><td class="n">${r.pr!==null?money(r.pr):`<input type="number" step="100" data-wk="ini_${W}${esc(r.k)}" value="${esc(r.iniIn)}" placeholder="0" style="width:110px;text-align:right" aria-label="Saldo inicial ${esc(r.k)}">`}</td>
     <td class="n">${money(r.cob)}</td><td class="n">${money(r.ent)}</td><td class="n">${money(r.sal)}</td><td class="n"><b>${money(r.sis)}</b></td>
     <td class="n"><input type="number" step="100" data-wk="real_${W}${esc(r.k)}" value="${esc(r.realIn)}" style="width:120px;text-align:right" aria-label="Saldo real ${esc(r.k)}"></td>
